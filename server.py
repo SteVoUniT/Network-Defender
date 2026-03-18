@@ -1,95 +1,96 @@
-from flask import Flask, request, jsonify
-import threading
 import pyshark
+import mysql.connector
+import asyncio
+from datetime import datetime
+import signal
+import sys
 
-app = Flask(__name__)
+# --------------------
+# Database Connection
+# --------------------
+db = mysql.connector.connect(
+    host="localhost",
+    user="netdefender",
+    password="1234",
+    database="netcap",
+    autocommit=False
+)
 
-captured_packets = []
+cursor = db.cursor()
 
+insert_query = """
+INSERT INTO packets
+(timestamp, src_ip, dst_ip, src_port, dst_port, protocol, length)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
 """
+
+BATCH_SIZE = 200
+batch = []
+
+# --------------------
+# Packet Handler
+# --------------------
 def packet_handler(pkt):
     try:
-        info = {
-            "protocol": pkt.highest_layer,
-            "src": pkt.ip.src if hasattr(pkt, 'ip') else None,
-            "dst": pkt.ip.dst if hasattr(pkt, 'ip') else None,
-            "length": pkt.length if hasattr(pkt, 'length') else None,
-        }
-        captured_packets.append(info)
-        print(f"[+] {info}")
-    except Exception as e:
-        print("Error parsing packet:", e)
-"""
+        timestamp = datetime.fromtimestamp(float(pkt.sniff_timestamp))
 
-def packet_handler(pkt):
-    try:
-        # IP Layer
         src_ip = pkt.ip.src if hasattr(pkt, 'ip') else None
         dst_ip = pkt.ip.dst if hasattr(pkt, 'ip') else None
-        ttl = int(pkt.ip.ttl) if hasattr(pkt, 'ip') and hasattr(pkt.ip, 'ttl') else None
 
-        # TCP/UDP Layer
         src_port = None
         dst_port = None
-        flags = None
+
         if hasattr(pkt, 'tcp'):
             src_port = int(pkt.tcp.srcport)
             dst_port = int(pkt.tcp.dstport)
-            flags = pkt.tcp.flags
         elif hasattr(pkt, 'udp'):
             src_port = int(pkt.udp.srcport)
             dst_port = int(pkt.udp.dstport)
 
-        # MAC addresses (Ethernet Layer)
-        src_mac = pkt.eth.src if hasattr(pkt, 'eth') else None
-        dst_mac = pkt.eth.dst if hasattr(pkt, 'eth') else None
+        protocol = pkt.highest_layer[:10]
+        length = int(pkt.length)
 
-        # Protocol and length
-        info = {
-            "protocol": pkt.highest_layer,
-            "src_ip": src_ip,
-            "dst_ip": dst_ip,
-            "src_port": src_port,
-            "dst_port": dst_port,
-            "flags": flags,
-            "ttl": ttl,
-            "src_mac": src_mac,
-            "dst_mac": dst_mac,
-            "length": int(pkt.length) if hasattr(pkt, 'length') else None,
-        }
+        batch.append((
+            timestamp,
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            protocol,
+            length
+        ))
 
-        captured_packets.append(info)
-        print(f"[+] {info}")
+        if len(batch) >= BATCH_SIZE:
+            cursor.executemany(insert_query, batch)
+            db.commit()
+            batch.clear()
+            print("Committed batch")
 
     except Exception as e:
-        print("Error parsing packet:", e)
+        print("Packet error:", e)
 
-def start_sniffing(interface="eth0"):
-    capture = pyshark.LiveCapture(interface=interface)
-    capture.apply_on_packets(packet_handler, timeout=1000)
+# --------------------
+# Graceful Shutdown
+# --------------------
+def shutdown(sig, frame):
+    print("Shutting down...")
+    if batch:
+        cursor.executemany(insert_query, batch)
+        db.commit()
+    cursor.close()
+    db.close()
+    sys.exit(0)
 
+signal.signal(signal.SIGINT, shutdown)
 
-@app.route('/')
-def index():
-    return jsonify({"status": "running", "packets_seen": len(captured_packets)})
+# --------------------
+# Start Capture
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-@app.route('/packets')
-def get_packets():
-    print(f"Fprtmote {jsonify(captured_packets[-50:])}")
-    return jsonify(captured_packets[-50:])  # Return the last 50 packets
-
-if __name__ == '__main__':
-    # Run packet capture in a background thread
-    
-    
-    
-    #TODO: Filter packets so you only capture traffic going from the Raspberry Pi to the router
-    #Before we run the filter lets make sure the rasberry Pi has a static IP
-    #and we set a DHCP Reservation on the router.
-    #bpf_filter="src host 192.X.X.X and dst host 192.X.X.X" <- add this to sniff_thread arg
-    
-    sniff_thread = threading.Thread(target=start_sniffing, args=("eth0",), daemon=True)
-    sniff_thread.start()
-    
-    # Start Flask
-    app.run(host='0.0.0.0', port=5000)
+print("Starting capture...")
+capture = pyshark.LiveCapture(interface="enp7s0f4u1c2")
+capture.apply_on_packets(packet_handler)
