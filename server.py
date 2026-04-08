@@ -10,6 +10,7 @@ import sys
 
 
 
+""" OLD SELECTOR LOGIC
 #-------User Input for Ethernet or Wireless-----------------
 def select_interface():
     import pyshark
@@ -30,7 +31,7 @@ def select_interface():
         except ValueError:
             print("[ERROR] Enter a valid number.")
 
-
+"""
 
 # --------------------
 # Database Connection
@@ -210,12 +211,34 @@ try:
 except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    
+#---------------------
+# Validation of Interface
+def is_interface_valid(interface):
+    import subprocess
+    result = subprocess.run(
+        ["ip", "link", "show", interface],
+        capture_output=True
+    )
+    return result.returncode == 0    
 
 print("Starting capture...")
+
+#---Accepts CLI arguments------------
+if len(sys.argv) < 2:
+    print("[ERROR] No interface provided")
+    print("Usage: python server.py <interface>")
+    sys.exit(1)
+
+selected_interface = sys.argv[1]
+print(f"[INFO] Using interface: {selected_interface}")
+
+
+""" OLD SELECTOR LOGIC
 #---------Integration of Interface Selection-----------_
 selected_interface = select_interface()
 print(f"[INFO] Using interface: {selected_interface}")
-
+"""
 capture = pyshark.LiveCapture(interface=selected_interface)
 
 #------------Threading Init------------------------------------
