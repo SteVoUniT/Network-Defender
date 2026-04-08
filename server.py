@@ -1,22 +1,51 @@
 import pyshark
 import mysql.connector
 import asyncio
+import threading
+import time
+from detection.analyzer import run_detection
 from datetime import datetime
 import signal
 import sys
 
+
+
+#-------User Input for Ethernet or Wireless-----------------
+def select_interface():
+    import pyshark
+
+    interfaces = pyshark.tshark.tshark.get_tshark_interfaces()
+
+    print("[INFO] Available interfaces:")
+    for i, iface in enumerate(interfaces):
+        print(f"{i}: {iface}")
+
+    while True:
+        try:
+            choice = int(input("Select interface index: "))
+            if 0 <= choice < len(interfaces):
+                return interfaces[choice]
+            else:
+                print("[ERROR] Invalid selection. Try again.")
+        except ValueError:
+            print("[ERROR] Enter a valid number.")
+
+
+
 # --------------------
 # Database Connection
 # --------------------
-db = mysql.connector.connect(
-    host="localhost",
-    user="netdefender",
-    password="1234",
-    database="netcap",
-    autocommit=False
-)
-
+def get_db():
+    return mysql.connector.connect(
+        host="localhost",
+        user="netdefender",
+        password="1234",
+        database="netcap",
+        autocommit=False
+    )
+db = get_db()
 cursor = db.cursor()
+# -----------------
 
 insert_query = """
 INSERT INTO packets
@@ -69,6 +98,97 @@ def packet_handler(pkt):
     except Exception as e:
         print("Packet error:", e)
 
+
+#-----Fetch Function----------
+
+def fetch_connections(cursor):
+    cursor.execute("""
+        SELECT
+            src_ip,
+            dst_ip,
+            COUNT(DISTINCT dst_port) as unique_ports,
+            COUNT(*) as total_connections
+        FROM packets
+        WHERE timestamp > NOW() - INTERVAL 30 SECOND
+        AND src_ip IS NOT NULL
+        AND dst_ip IS NOT NULL
+        AND dst_ip NOT LIKE '224.%'
+        GROUP BY src_ip, dst_ip
+    """)
+    return cursor.fetchall()
+
+#--------Alert Insertion---No-Dups-----
+def insert_or_update_alert(cursor, alert):
+
+    # Build description based on alert type
+    if alert["type"] == "PORT_SCAN":
+        description = (
+            f"Port scan: {alert['ports']} ports, "
+            f"{alert['connections']} connections"
+        )
+
+    elif alert["type"] == "HIGH_TRAFFIC":
+        description = (
+            f"High traffic: {alert['connections']} connections"
+        )
+
+    else:
+        description = "Unknown alert type"
+
+    # Check for existing alert (dedup window)
+    cursor.execute("""
+        SELECT id, `count` FROM alerts
+        WHERE type=%s AND source_ip=%s AND destination_ip=%s
+        AND timestamp >= NOW() - INTERVAL 30 SECOND
+    """, (alert["type"], alert["src_ip"], alert["dst_ip"]))
+
+    result = cursor.fetchone()
+
+    if result:
+        alert_id, count = result
+        cursor.execute("""
+            UPDATE alerts
+            SET last_seen=NOW(), count=%s
+            WHERE id=%s
+        """, (count + 1, alert_id))
+    else:
+        cursor.execute("""
+            INSERT INTO alerts (
+                type, source_ip, destination_ip,
+                description, timestamp, last_seen, count
+            )
+            VALUES (%s, %s, %s, %s, NOW(), NOW(), 1)
+        """, (
+            alert["type"],
+            alert["src_ip"],
+            alert["dst_ip"],
+            description
+        ))
+#---------------Detection Threading-------------
+def detection_loop():
+    db = get_db()
+    cursor = db.cursor()
+
+    while True:
+        try:
+            print("[INFO] Running detection cycle...")
+
+            rows = fetch_connections(cursor)
+            alerts = run_detection(rows)
+
+            for alert in alerts:
+                print(f"[ALERT] {alert}")
+                insert_or_update_alert(cursor, alert)
+
+            db.commit()
+
+        except Exception as e:
+            print("[ERROR] Detection loop:", e)
+
+        time.sleep(10)
+
+
+
 # --------------------
 # Graceful Shutdown
 # --------------------
@@ -92,5 +212,14 @@ except RuntimeError:
     asyncio.set_event_loop(loop)
 
 print("Starting capture...")
-capture = pyshark.LiveCapture(interface="enp7s0f4u1c2")
+#---------Integration of Interface Selection-----------_
+selected_interface = select_interface()
+print(f"[INFO] Using interface: {selected_interface}")
+
+capture = pyshark.LiveCapture(interface=selected_interface)
+
+#------------Threading Init------------------------------------
+detection_thread = threading.Thread(target=detection_loop, daemon=True)
+detection_thread.start()
+#-------------Program Start-----------------------------------------
 capture.apply_on_packets(packet_handler)
