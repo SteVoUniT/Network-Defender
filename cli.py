@@ -4,18 +4,28 @@ import subprocess
 import sys
 
 process = None
+alert_process = None
 selected_interface = None
+
+
+def start_alert_viewer():
+    global alert_process
+
+    if alert_process is None:
+        print("[INFO] Launching alert viewer...")
+
+        alert_process = subprocess.Popen(
+            ["mate-terminal", "--", "python", "alert_viewer.py"]
+        )
+    else:
+        print("[WARN] Alert viewer already running")
 
 
 # =========================
 # Interface Selection
 # =========================
 def select_interface():
-    result = subprocess.run(
-        ["tshark", "-D"],
-        capture_output=True,
-        text=True
-    )
+    result = subprocess.run(["tshark", "-D"], capture_output=True, text=True)
 
     lines = result.stdout.strip().split("\n")
 
@@ -30,7 +40,7 @@ def select_interface():
     choice = radiolist_dialog(
         title="Select Network Interface",
         text="Use arrow keys and press Enter:",
-        values=interfaces
+        values=interfaces,
     ).run()
 
     return choice
@@ -45,20 +55,24 @@ def start_capture(interface):
     if process is None:
         print(f"[INFO] Launching capture in new terminal on {interface}...")
 
-        process = subprocess.Popen([
-            "mate-terminal",
-            "--",
-            "python",
-            "server.py",
-            interface
-        ])
+        process = subprocess.Popen(
+            [
+                "mate-terminal",
+                "--",
+                "bash",
+                "-c",
+                f"cd /home/stevopc/Network-Defender && python server.py {interface}; exec bash",
+            ]
+        )
+
+        start_alert_viewer()
 
     else:
         print("[WARN] Capture already running")
 
 
 def stop_capture():
-    global process
+    global process, alert_process
 
     if process is not None:
         print("[INFO] Stopping capture...")
@@ -66,6 +80,13 @@ def stop_capture():
         subprocess.run(["pkill", "-f", "server.py"])
 
         process = None
+
+    if alert_process is not None:
+        print("[INFO] Stopping alert viewer...")
+
+        subprocess.run(["pkill", "-f", "alert_viewer.py"])
+        alert_process = None
+
     else:
         print("[WARN] No capture running")
 
