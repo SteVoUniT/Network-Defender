@@ -1,7 +1,6 @@
 from detection import rules
 from llm.client import classify_alert
 
-
 def run_detection(rows):
     """
     Takes pre-fetched DB rows

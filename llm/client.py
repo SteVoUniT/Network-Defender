@@ -1,6 +1,18 @@
 import requests
 from functools import lru_cache
 
+
+def fallback_classify(total_connections, unique_ports):
+    if unique_ports > 50:
+        return "High", "PORT_SCAN", f"Ports:{unique_ports}"
+    elif unique_ports > 20:
+        return "Medium", "PORT_SCAN", f"Ports:{unique_ports}"
+    elif total_connections > 100:
+        return "Medium", "HIGH_TRAFFIC", f"Conns:{total_connections}"
+    else:
+        return "Low", "NORMAL", "Baseline traffic"
+
+
 LLM_URL = "http://100.87.225.53:5454/v1/chat/completions"
 MODEL_NAME = "microsoft_Phi-3-mini-4k-instruct-gguf_Phi-3-mini-4k-instruct-q4.gguf"
 
@@ -8,15 +20,13 @@ MODEL_NAME = "microsoft_Phi-3-mini-4k-instruct-gguf_Phi-3-mini-4k-instruct-q4.gg
 def test_connection():
     payload = {
         "model": MODEL_NAME,
-        "messages": [
-            {"role": "user", "content": "Say: connection OK"}
-        ],
+        "messages": [{"role": "user", "content": "Say: connection OK"}],
         "temperature": 0.0,
-        "max_tokens": 20
+        "max_tokens": 20,
     }
 
     try:
-        r = requests.post(LLM_URL, json=payload, timeout=10)
+        r = requests.post(LLM_URL, json=payload, timeout=2)
         r.raise_for_status()
 
         data = r.json()
@@ -36,38 +46,35 @@ def test_connection():
 def classify_alert(src_ip, dst_ip, total_connections, unique_ports):
     # very short prompt for speed
     user_content = f"""
-	Ports:{unique_ports} Conns:{total_connections}
+    Ports:{unique_ports} Conns:{total_connections}
 
-	Rules:
-	Ports = 0 → NOT Port Scan
-	>50 ports = HIGH Port Scan
-	>20 ports = MEDIUM Port Scan
-	Ports < 10 AND Conns > 100 → Flood
+    Rules:
+    Ports = 0 → NOT Port Scan
+    >50 ports = HIGH Port Scan
+    >20 ports = MEDIUM Port Scan
+    Ports < 10 AND Conns > 100 → Flood
 
-	Output:
-	Threat Level:<Low/Medium/High>
-	Type:<Normal/Port Scan/Flood/Suspicious>
-	Reason:<short sentence mentioning ports or connections>
-	"""
+    Output:
+    Threat Level:<Low/Medium/High>
+    Type:<Normal/Port Scan/Flood/Suspicious>
+    Reason:<short sentence mentioning ports or connections>
+    """
 
     payload = {
         "model": MODEL_NAME,
         "messages": [
             {
                 "role": "system",
-                "content": "You classify network activity. Follow rules exactly. Output only the format."
+                "content": "You classify network activity. Follow rules exactly. Output only the format.",
             },
-            {
-                "role": "user",
-                "content": user_content
-            }
+            {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
-        "max_tokens": 60
+        "max_tokens": 60,
     }
 
     try:
-        r = requests.post(LLM_URL, json=payload, timeout=10)
+        r = requests.post(LLM_URL, json=payload, timeout=2)
         r.raise_for_status()
 
         data = r.json()
@@ -76,12 +83,11 @@ def classify_alert(src_ip, dst_ip, total_connections, unique_ports):
         return parse_llm_response(content)
 
     except Exception as e:
-        print(f"[LLM ERROR] {e}")
-        return {
-            "threat_level": "Unknown",
-            "type": "Unknown",
-            "reason": "LLM unavailable"
-        }
+        print(f"[LLM ERROR] {e} → using fallback")
+
+        tl, t, r = fallback_classify(total_connections, unique_ports)
+
+        return {"threat_level": tl, "type": t, "reason": f"[FALLBACK] {r}"}
 
 
 def parse_llm_response(text):
@@ -103,11 +109,7 @@ def parse_llm_response(text):
         elif line.lower().startswith("reason"):
             reason = line.split(":", 1)[-1].strip()
 
-    return {
-        "threat_level": threat,
-        "type": typ,
-        "reason": reason
-    }
+    return {"threat_level": threat, "type": typ, "reason": reason}
 
 
 if __name__ == "__main__":
@@ -116,10 +118,7 @@ if __name__ == "__main__":
 
     print("\n=== Testing Classification ===")
     result = classify_alert(
-        src_ip="192.168.1.100",
-        dst_ip="8.8.8.8",
-        total_connections=120,
-        unique_ports=75
+        src_ip="192.168.1.100", dst_ip="8.8.8.8", total_connections=120, unique_ports=75
     )
 
     print("\n[CLASSIFICATION RESULT]")

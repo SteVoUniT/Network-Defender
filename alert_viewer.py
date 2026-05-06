@@ -11,9 +11,7 @@ def find_latest_log():
         return None
 
     files = [
-        os.path.join(LOG_DIR, f)
-        for f in os.listdir(LOG_DIR)
-        if f.startswith("alerts_")
+        os.path.join(LOG_DIR, f) for f in os.listdir(LOG_DIR) if f.startswith("alerts_")
     ]
 
     if not files:
@@ -23,9 +21,50 @@ def find_latest_log():
 
 
 def display_line(line):
-    print_formatted_text(HTML(
-        f"<ansired><b>{line.strip()}</b></ansired>"
-    ))
+    line = line.strip()
+
+    try:
+        # Split log line
+        main, llm_type, llm_reason = line.split(" | ")
+
+        parts = main.split(" ", 4)
+
+        time_part = parts[0]  # [HH:MM:SS]
+        severity = parts[1]  # HIGH / MEDIUM
+        alert_type = parts[2]  # HIGH_TRAFFIC / PORT_SCAN
+        src_dst = " ".join(parts[3:])
+
+        # Extract IPs cleanly
+        if "→" in src_dst:
+            src, dst = src_dst.split(" → ", 1)
+        else:
+            src, dst = src_dst, ""
+
+        # --- Color logic ---
+        if alert_type == "PORT_SCAN":
+            color = "ansired"
+        elif alert_type == "HIGH_TRAFFIC":
+            color = "ansiyellow"
+        else:
+            color = "ansiwhite"
+
+        # --- Output ---
+        print_formatted_text(
+            HTML(
+                f"<b>{time_part}</b> "
+                f"<{color}><b>{severity:<6}</b></{color}> {alert_type}"
+            )
+        )
+
+        print_formatted_text(HTML(f"<{color}><b>{src}</b> → <b>{dst}</b></{color}>"))
+
+        print_formatted_text(HTML(f"<{color}>AI: {llm_type} → {llm_reason}</{color}>"))
+
+        print()  # spacing between alerts
+
+    except Exception:
+        # fallback
+        print_formatted_text(HTML(f"<ansiwhite>{line}</ansiwhite>"))
 
 
 def follow(file, current_path):
@@ -45,6 +84,7 @@ def follow(file, current_path):
             return latest
 
         time.sleep(0.1)  # faster polling (was 0.2)
+
 
 if __name__ == "__main__":
     print("[INFO] Alert Viewer Started")
